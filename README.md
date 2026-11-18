@@ -11,7 +11,7 @@
 - 학습·검증 손실과 정확도를 첫 epoch부터 마지막 epoch까지 기록하고, 데이터 증강 적용 여부에 따른 검증 정확도와 14×14 혼동행렬로 성능을 분석한다.
 - 학습 데이터, 학습·예측 코드, 최종 가중치, 학습 로그, 혼동행렬 이미지, 2분 이내 실행 영상을 제출한다. 시험 당일에는 제공되는 테스트 이미지에 대한 예측 결과를 30분 안에 제출하고, 각자 팀 코드와 실행 결과를 바탕으로 지필고사를 치른다.
 
-세부 촬영 규칙, 제출 파일 및 예측 입출력 형식은 [기말과제 공지](docs/기말과제공지.pdf)를 따른다. 구체적인 모델 구조와 구현 계획은 추후 정한다.
+세부 촬영 규칙, 제출 파일 및 예측 입출력 형식은 [기말과제 공지](docs/기말과제공지.pdf)를 따른다. 구현 기준과 남은 확인은 [상세 계획](docs/plan.md)에 정리한다.
 
 ## 주의사항
 
@@ -20,3 +20,92 @@
 - **모델의 복잡함보다 정확도를 우선한다.** 복잡한 구조나 기술의 개수보다 검증 결과를 근거로 개선한다.
 - **과제의 데이터·모델 제한을 준수한다.** 인터넷 이미지, 공개 데이터셋, 다른 팀의 사진, 사전학습 가중치, 손 검출·키포인트 모델(MediaPipe 등)은 사용하지 않는다.
 - **Test 시연시 코드안에서 전처리 수행후 예측한다.** 필요한 전처리는 학습 조건에 맞춰 `predict.py` 안에서 수행한다.
+
+## 구현 파일
+
+- `src/data_processing.py`: 원본·메타데이터·분할 검사, 공통 전처리, 학습 증강, Dataset.
+- `src/model.py`: 직접 구성한 합성곱 3블록과 14클래스 분류부.
+- `src/train.py`: 무작위 초기화 학습, 증강 off/on 비교, epoch별 평가, 가중치 선택과 혼동행렬.
+- `src/predict.py`: 원본 이미지 폴더를 읽어 `filename,pred` CSV 생성.
+
+`requirements.txt`는 저장소 루트에 둔다. 실행 폴더와 관계없이 데이터는 루트 `data/`, 결과는 루트 `runs/`, 추론 가중치는 루트 `best.pt`를 사용한다. `--input`과 `--output`의 상대 경로는 명령을 실행한 현재 폴더를 기준으로 해석한다.
+
+입력은 RGB 128×128이며 EXIF 방향 보정, 비율 유지 크기 조절, 검은 중앙 패딩, CHW float32와 0~1 정규화를 공통으로 적용한다. 학습 증강은 회전 -10~10도·배율 0.90~1.00·밝기 0.90~1.10이며 검증·추론에는 적용하지 않는다.
+
+## 실행 환경
+
+확인에 사용한 환경은 Windows의 `vision-study`, Python 3.12.13, PyTorch 2.13.0+cpu다. 나머지 직접 의존성의 확인 버전도 `requirements.txt`에 기록했다. CUDA 환경은 아직 확인하지 않았다.
+
+아래는 Windows에서 프로젝트 폴더를 연 뒤 사용하는 명령이다. 새 환경에서는 먼저 의존성을 설치한다.
+
+```cmd
+python -m pip install -r requirements.txt
+```
+
+## 데이터가 준비된 뒤 학습
+
+`data/c00/`~`data/c13/` 바로 아래에 JPG 원본을 둔다. `metadata.csv`와 팀 공통 `split.csv`도 `data/`에 있어야 한다. 두 CSV는 UTF-8이며 헤더는 다음 순서다.
+
+```text
+metadata.csv: file,class_id,signer,background,lighting,angle,scale
+split.csv: file,partition,group_id
+```
+
+`file`은 `c00/s01_c00_001.jpg`처럼 `/`로 구분한 data 기준 상대 경로다. `partition`은 `train` 또는 `val`이며, `group_id`는 팀원이 확인한 유사 촬영 그룹이다. 같은 그룹은 한 분할에만 둔다. 촬영자·클래스별 약 80:20 분할을 팀에서 한 번 확정해 공유하며 학습 프로그램은 이를 임의로 새로 만들지 않는다.
+
+학습 전 파일·라벨 대응, 촬영자별 자음당 30장 이상, 배경 3종·조명 2종 이상, JPG 긴 변 640px 이상, 바이트가 동일한 원본, 분할 그룹 중복과 클래스 누락을 검사한다. 각 촬영자의 각 클래스가 양쪽 분할에 있어야 한다. 흐림·손 모양·유사 촬영·실제 배경과 조명·각도·손 크기는 사람이 사진과 메타데이터를 대조해야 한다.
+
+```cmd
+python src/train.py
+```
+
+이 명령은 저장소 루트에서 실행한다. 기본 설정은 Adam 0.001, 배치 32, 시드 42, 증강 조건별 30 epoch다. 메모리 부족이면 `src/train.py`의 `BATCH_SIZE`를 16 또는 8로 바꾸고 두 조건을 모두 새로 실행한다. 중단한 실행에서 이어 학습하지 않는다.
+
+새 결과는 `runs/실행ID/`에 저장한다. `off/`, `on/`에는 각 조건의 로그와 최고 가중치를, `selected/`에는 선택한 `best.pt`, `train_log.csv`, `comparison.csv`, `confusion_matrix.png`를 둔다. 실행 루트에 설정·완료 상태·라이브러리 버전·최다 혼동 쌍을 기록한 `config.json`, 사용한 메타데이터·분할·원본 해시·분할별 수량을 보존한다. 실패한 실행은 `config.json`의 `status`가 `failed`다.
+
+검증 정확도 우선, 동률이면 낮은 검증 손실, 둘 다 같으면 이른 epoch를 선택한다. 조건 간 완전 동률이면 off를 선택한다. epoch 지표는 증강 없는 전체 train/val을 eval 모드에서 계산하며 정확도 단위는 0~1이다.
+
+## 학습된 가중치로 예측
+
+완료된 실행의 `selected/best.pt`를 저장소 루트의 `best.pt`로 복사한 뒤 루트에서 실행한다. `src/` 안에는 가중치를 두지 않는다. 추론에는 학습 데이터나 메타데이터가 필요하지 않다.
+
+```cmd
+python src/predict.py --input test_images/ --output predict_팀번호.csv
+```
+
+입력 폴더 바로 아래의 JPG/JPEG/PNG를 파일명 순으로 처리한다. 하위 폴더의 이미지, 빈 입력, 읽기 실패, 가중치 불일치는 중단 사유다. 모든 예측이 성공한 뒤 완성된 CSV를 최종 경로에 저장하며 기존 출력은 덮어쓰지 않는다.
+
+라벨 0~13은 `ㄱ, ㄴ, ㄷ, ㄹ, ㅁ, ㅂ, ㅅ, ㅇ, ㅈ, ㅊ, ㅋ, ㅌ, ㅍ, ㅎ` 순서다.
+
+## 과제 명령과 제출 폴더
+
+제출물도 아래 폴더 구조를 유지한다. 네 구현 파일을 루트로 평탄화하지 않는다. `data_processing.py`를 포함한 네 파일은 같은 `src/` 안에 있어야 하며, 의존성 목록과 가중치는 한 단계 위에 둔다. 데이터·로그·혼동행렬과 2분 이내 영상도 함께 준비한다.
+
+```text
+제출폴더/
+  requirements.txt
+  best.pt
+  train_log.csv
+  confusion_matrix.png
+  data/                 학습용 클래스 폴더·metadata.csv·split.csv
+  test_images/          시험 입력 폴더 예시
+  src/
+    data_processing.py
+    model.py
+    train.py
+    predict.py
+```
+
+과제의 `python train.py`, `python predict.py --input ... --output ...` 명령은 제출폴더의 `src/`에서 실행한다. 아래 CMD 예시는 제출폴더에서 시작하며, 루트의 시험 입력을 읽고 루트에 결과 CSV를 만든다.
+
+```cmd
+cd src
+python train.py
+python predict.py --input ../test_images/ --output ../predict_팀번호.csv
+```
+
+이 경우에도 학습은 `../data/`를 읽어 `../runs/`에 저장하고 추론은 `../best.pt`를 읽는다. `src/`에서 `--input test_images/ --output predict_팀번호.csv`를 그대로 쓰면 입력과 출력은 각각 `src/test_images/`와 `src/predict_팀번호.csv`가 된다. 시험 이미지의 실제 위치에 맞춰 상대 경로를 지정한다.
+
+## 현재 확인 범위
+
+실제 팀 사진과 메타데이터는 아직 없다. 실제 데이터 학습·정확도·시험 입력 처리 시간은 데이터와 시험 환경이 준비된 뒤 확인한다. 구현 확인 결과는 [개발 로그](docs/devlog.md)에 기록한다.
