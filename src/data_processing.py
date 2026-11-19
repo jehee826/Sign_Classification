@@ -1,185 +1,137 @@
+import argparse
 import csv
-import hashlib
-import math
 import random
-from collections import Counter
-from pathlib import Path, PurePosixPath
+import sys
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-import numpy as np
-import torch
-from PIL import Image, ImageOps
-from torch.utils.data import Dataset
+from PIL import Image
 
 
-LABELS = ["ㄱ", "ㄴ", "ㄷ", "ㄹ", "ㅁ", "ㅂ", "ㅅ", "ㅇ", "ㅈ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"]
+ROOT = Path(__file__).resolve().parents[1]
 INPUT_SIZE = 128
+SPLIT_SEED = 42
+LABELS = ["ㄱ", "ㄴ", "ㄷ", "ㄹ", "ㅁ", "ㅂ", "ㅅ", "ㅇ", "ㅈ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"]
+CLASS_FOLDERS = [f"c{index:02d}" for index in range(len(LABELS))]
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
-PREPROCESSING = {
-    "version": 1,
-    "orientation": "exif_transpose",
-    "color": "RGB",
-    "resize": "fit_longest_side_bilinear",
-    "padding": "center_black",
-    "layout": "CHW",
-    "normalization": "float32_div_255",
-}
-METADATA_FIELDS = ("file", "class_id", "signer", "background", "lighting", "angle", "scale")
-SPLIT_FIELDS = ("file", "partition", "group_id")
 
 
-def read_csv(path, fields):
-    if not path.is_file():
-        raise ValueError(f"필수 CSV가 없습니다: {path}")
-    with path.open(encoding="utf-8-sig", newline="") as stream:
-        reader = csv.DictReader(stream)
-        if reader.fieldnames != list(fields):
-            raise ValueError(f"{path.name} 헤더는 {','.join(fields)} 순서여야 합니다.")
-        rows = []
-        for line_number, row in enumerate(reader, 2):
-            if None in row or any(not (value or "").strip() for value in row.values()):
-                raise ValueError(f"{path.name}:{line_number}: 누락되거나 초과한 값이 있습니다.")
-            rows.append({key: value.strip() for key, value in row.items()})
-    if not rows:
-        raise ValueError(f"비어 있는 CSV입니다: {path}")
-    return rows
-
-
-def image_path(data_dir, filename):
-    relative = PurePosixPath(filename)
-    if "\\" in filename or relative.is_absolute() or ".." in relative.parts or ":" in filename:
-        raise ValueError(f"data 기준 상대 경로를 /로 작성하세요: {filename}")
-    path = (data_dir / relative).resolve()
-    if not path.is_relative_to(data_dir.resolve()) or not path.is_file():
-        raise ValueError(f"data 안에 있는 파일을 찾을 수 없습니다: {filename}")
-    return path
-
-
-def load_rgb(path):
-    try:
-        with Image.open(path) as image:
-            return ImageOps.exif_transpose(image).convert("RGB")
-    except (OSError, ValueError, Image.DecompressionBombError) as error:
-        raise ValueError(f"이미지를 읽을 수 없습니다: {path}: {error}") from error
-
-
-def preprocess(image, augmentation_rng=None):
+# 비율을 유지하며 이미지의 긴 변을 128px로 맞춘다.
+def resize_image(image):
     width, height = image.size
-    brightness = 1.0
-    if augmentation_rng is None:
-        ratio = INPUT_SIZE / max(width, height)
-        new_size = (max(1, round(width * ratio)), max(1, round(height * ratio)))
-        resized = image.resize(new_size, Image.Resampling.BILINEAR)
-        canvas = Image.new("RGB", (INPUT_SIZE, INPUT_SIZE), (0, 0, 0))
-        canvas.paste(resized, ((INPUT_SIZE - new_size[0]) // 2, (INPUT_SIZE - new_size[1]) // 2))
-    else:
-        angle = math.radians(augmentation_rng.uniform(-10.0, 10.0))
-        zoom = augmentation_rng.uniform(0.90, 1.00)
-        brightness = augmentation_rng.uniform(0.90, 1.10)
-        cosine, sine = math.cos(angle), math.sin(angle)
-        rotated_width = abs(cosine) * width + abs(sine) * height
-        rotated_height = abs(sine) * width + abs(cosine) * height
-        ratio = INPUT_SIZE / max(rotated_width, rotated_height) * zoom
-        # 출력 좌표에서 원본 좌표로 역변환해 회전 후에도 전체 이미지가 들어오게 한다.
-        a, b = cosine / ratio, sine / ratio
-        d, e = -sine / ratio, cosine / ratio
-        center = INPUT_SIZE / 2
-        coefficients = (a, b, width / 2 - (a + b) * center,
-                        d, e, height / 2 - (d + e) * center)
-        canvas = image.transform(
-            (INPUT_SIZE, INPUT_SIZE), Image.Transform.AFFINE, coefficients,
-            resample=Image.Resampling.BILINEAR, fillcolor=(0, 0, 0),
-        )
-    pixels = np.asarray(canvas, dtype=np.float32) / 255.0
-    pixels = np.clip(pixels * brightness, 0.0, 1.0)
-    return torch.from_numpy(pixels.transpose(2, 0, 1).copy())
+    longest_side = max(width, height)
+    if longest_side == INPUT_SIZE:
+        return image
+    scale = INPUT_SIZE / longest_side
+    size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    return image.resize(size, Image.Resampling.BILINEAR)
 
 
-def inspect_training_data(data_dir):
-    metadata = read_csv(data_dir / "metadata.csv", METADATA_FIELDS)
-    split = read_csv(data_dir / "split.csv", SPLIT_FIELDS)
-    records = {}
-    paths = set()
-    hashes = []
-    digest_files = {}
-    for row in metadata:
-        filename = row["file"]
-        path = image_path(data_dir, filename)
-        if filename != path.relative_to(data_dir.resolve()).as_posix():
-            raise ValueError(f"경로 표기를 정규화하세요: {filename}")
-        if filename in records or path in paths:
-            raise ValueError(f"metadata.csv 중복 파일입니다: {filename}")
-        if row["class_id"] not in {str(index) for index in range(len(LABELS))}:
-            raise ValueError(f"class_id는 정수 0~13이어야 합니다: {filename}")
-        class_id = int(row["class_id"])
-        if len(Path(filename).parts) != 2 or Path(filename).parts[0] != f"c{class_id:02d}":
-            raise ValueError(f"클래스 폴더와 라벨이 다릅니다: {filename}")
-        if path.suffix.lower() not in {".jpg", ".jpeg"}:
-            raise ValueError(f"학습 원본은 JPG여야 합니다: {filename}")
-        with Image.open(path) as image:
-            if image.format != "JPEG" or max(image.size) < 640:
-                raise ValueError(f"JPEG 형식과 긴 변 640px 이상을 확인하세요: {filename}")
-        load_rgb(path)
-        with path.open("rb") as stream:
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()
-        if digest in digest_files:
-            raise ValueError(f"동일 원본이 중복되었습니다: {digest_files[digest]}, {filename}")
-        digest_files[digest] = filename
-        hashes.append({"file": filename, "sha256": digest})
-        records[filename] = {**row, "class_id": class_id, "path": path}
-        paths.add(path)
+# 텐서로 변환하기 전에 사진을 정사각형 검은 배경의 가운데에 놓는다.
+def pad_image(image):
+    canvas = Image.new("RGB", (INPUT_SIZE, INPUT_SIZE))
+    left = (INPUT_SIZE - image.width) // 2
+    top = (INPUT_SIZE - image.height) // 2
+    canvas.paste(image, (left, top))
+    return canvas
 
-    actual_files = {
-        path.resolve() for path in data_dir.rglob("*")
-        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
-    }
-    if actual_files != paths:
-        missing = sorted(str(path) for path in actual_files - paths)
-        raise ValueError(f"메타데이터에 없는 이미지가 있습니다: {missing[:5]}")
-    for signer in sorted({row["signer"] for row in metadata}):
-        signed = [row for row in metadata if row["signer"] == signer]
-        counts = Counter(int(row["class_id"]) for row in signed)
-        if any(counts[index] < 30 for index in range(len(LABELS))):
-            raise ValueError(f"{signer}: 모든 자음에 30장 이상 필요합니다. 현재 수량: {dict(counts)}")
-        if len({row["background"] for row in signed}) < 3 or len({row["lighting"] for row in signed}) < 2:
-            raise ValueError(f"{signer}: 배경 3종 이상, 조명 2종 이상이 필요합니다.")
 
-    assigned = {}
+# 팀 공통 분할을 읽고 사진과 촬영 그룹이 한쪽에만 속하는지 확인한다.
+def read_split(source, images_by_class):
+    remaining = {}
+    for images in images_by_class.values():
+        for path in images:
+            remaining[path.relative_to(source).as_posix()] = path
+
+    partitions = {"train": [], "val": []}
     groups = {}
-    for row in split:
-        filename, partition, group_id = row["file"], row["partition"], row["group_id"]
-        if filename not in records or filename in assigned:
-            raise ValueError(f"split.csv에 알 수 없거나 중복된 파일이 있습니다: {filename}")
-        if partition not in {"train", "val"}:
-            raise ValueError(f"partition은 train 또는 val이어야 합니다: {filename}")
-        if group_id in groups and groups[group_id] != partition:
-            raise ValueError(f"학습·검증에 같은 촬영 그룹이 있습니다: {group_id}")
-        groups[group_id] = partition
-        assigned[filename] = partition
-        records[filename].update(partition=partition, group_id=group_id)
-    if set(assigned) != set(records):
-        raise ValueError("metadata.csv와 split.csv의 파일 목록이 일치하지 않습니다.")
-    for partition in ("train", "val"):
-        present = {row["class_id"] for row in records.values() if row["partition"] == partition}
-        if present != set(range(len(LABELS))):
-            raise ValueError(f"{partition} 분할에 14클래스가 모두 있어야 합니다.")
-    for signer in sorted({row["signer"] for row in metadata}):
-        for class_id in range(len(LABELS)):
-            partitions = {row["partition"] for row in records.values()
-                          if row["signer"] == signer and row["class_id"] == class_id}
-            if partitions != {"train", "val"}:
-                raise ValueError(f"{signer}, {LABELS[class_id]}: 그룹을 보존하며 양쪽 분할을 확보하세요.")
-    return [records[filename] for filename in sorted(records)], hashes
+    with (source / "split.csv").open(encoding="utf-8-sig", newline="") as stream:
+        reader = csv.DictReader(stream)
+        if not {"file", "partition", "group_id"}.issubset(reader.fieldnames or ()):
+            raise ValueError("split.csv에는 file, partition, group_id 열이 필요합니다.")
+        for row in reader:
+            filename = (row["file"] or "").strip()
+            partition = (row["partition"] or "").strip()
+            group = (row["group_id"] or "").strip()
+            path = remaining.pop(filename, None)
+            if path is None or partition not in partitions or not group:
+                raise ValueError(f"split.csv {reader.line_num}행의 사진·분할·그룹을 확인하세요: {filename}")
+            if group in groups and groups[group] != partition:
+                raise ValueError(f"같은 촬영 그룹이 학습과 검증에 있습니다: {group}")
+            groups[group] = partition
+            partitions[partition].append((path, group))
+
+    if remaining:
+        raise ValueError(f"split.csv에 없는 사진이 {len(remaining)}장 있습니다: {next(iter(remaining))}")
+    for partition, images in partitions.items():
+        folders = {path.relative_to(source).parts[0] for path, _ in images}
+        if folders != set(CLASS_FOLDERS):
+            raise ValueError(f"{partition} 분할에 c00~c13 사진이 모두 필요합니다.")
+    return partitions
 
 
-class SignDataset(Dataset):
-    def __init__(self, records, partition, augmentation_seed=None):
-        self.records = [row for row in records if row["partition"] == partition]
-        self.augmentation_rng = random.Random(augmentation_seed) if augmentation_seed is not None else None
+# 자음별 사진을 읽고 공통 CSV 또는 고정 시드로 학습·검증을 나눈다.
+def split_images(source):
+    images_by_class = {}
+    for label in CLASS_FOLDERS:
+        images = sorted(path for path in (source / label).rglob("*")
+                        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS)
+        if len(images) < 2:
+            raise ValueError(f"{label}/에 학습·검증용 사진이 최소 2장 필요합니다.")
+        images_by_class[label] = images
 
-    def __len__(self):
-        return len(self.records)
+    if (source / "split.csv").is_file():
+        return read_split(source, images_by_class)
 
-    def __getitem__(self, index):
-        row = self.records[index]
-        image = load_rgb(row["path"])
-        return preprocess(image, self.augmentation_rng), row["class_id"]
+    print("촬영 그룹 정보 없이 자음별 약 80:20으로 분할합니다.")
+    rng = random.Random(SPLIT_SEED)
+    partitions = {"train": [], "val": []}
+    for images in images_by_class.values():
+        rng.shuffle(images)
+        val_count = max(1, round(len(images) * 0.2))
+        partitions["train"].extend((path, "") for path in images[val_count:])
+        partitions["val"].extend((path, "") for path in images[:val_count])
+    return partitions
+
+
+# 리사이즈한 사진을 train·val 폴더에 나눠 저장하고 분할표를 만든다.
+def prepare_data(source, output):
+    if not source.is_dir():
+        raise ValueError(f"원본 폴더를 찾을 수 없습니다: {source}")
+    if output.exists():
+        raise ValueError(f"결과 폴더가 이미 있습니다: {output}")
+
+    partitions = split_images(source)
+    with TemporaryDirectory(dir=output.parent) as folder:
+        resized = Path(folder) / output.name
+        resized.mkdir()
+        with (resized / "split.csv").open("w", encoding="utf-8-sig", newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(("file", "partition", "group_id"))
+            for partition, images in partitions.items():
+                for path, group in sorted(images):
+                    relative = path.relative_to(source)
+                    target = resized / partition / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with Image.open(path) as image:
+                        resize_image(image).save(target)
+                    writer.writerow((relative.as_posix(), partition, group))
+        resized.rename(output)
+
+    print(f"전처리 완료: 학습 {len(partitions['train'])}장, 검증 {len(partitions['val'])}장 → {output}")
+
+
+# 원본 폴더를 인자로 받아 전처리를 따로 실행한다.
+def main():
+    parser = argparse.ArgumentParser(description="사진을 비율 유지 리사이즈하고 학습·검증으로 분할")
+    parser.add_argument("--input", type=Path, default=ROOT / "data", help="원본 사진 폴더")
+    source = parser.parse_args().input.resolve()
+    output = source.with_name(f"{source.name}_prosessing")
+    prepare_data(source, output)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError) as error:
+        sys.exit(f"전처리 실패: {error}")
