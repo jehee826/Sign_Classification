@@ -30,11 +30,16 @@ LOG_FIELDS = ("epoch", "train_loss", "train_acc", "val_loss", "val_acc")
 
 # 전체 학습 배치에서 가중치를 갱신하고 손실과 정확도를 계산한다.
 def train_epoch(model, train_loader, criterion, optimizer, device):
+    # 학습모드로 변경
     model.train()
     total_loss, correct = 0.0, 0
     for images, labels in train_loader:
         images, labels = images.to(device), labels.to(device)
+        # 기존 "기울기" 제거 => "가중치"와 "기울기"는 서로 다르다 "기울기"를 계산해서 "가중치"에 반영하는 방식이다
+        # 만약 제거하지않는다면? 
+        # 한번 계산 == 기울기 2.0 => 가중치반영 => 가중치 2.0 => 다음 epoch에 기울기 계산 => 여기서 기존기울기와 합쳐져버려 가중치에 한번에 들어가버림 => 기존기울기 2.0 + 그다음 기울기 1.0 == 3.0이 가중치에 합해져버린다 => 그 전 epoch에서 업데이트된 가중치에 1.0이 더해지는게 아니라 3.0이 더해져버려서 2.0(기존) + 3.0(초기화 안된가중치) == 5.0이 되버림 
         optimizer.zero_grad()
+        # 순전파 => pytorch가 제공하는 nn.module로 
         logits = model(images)
         loss = criterion(logits, labels)
         loss.backward()
@@ -161,25 +166,31 @@ def main():
         with (directory / "train_log.csv").open("w", encoding="utf-8", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=LOG_FIELDS)
             writer.writeheader()
+
+            # 학습 시작
             for epoch in range(1, EPOCHS + 1):
+                # metrics에 저장할 값 저장
                 train_loss, train_acc = train_epoch(model, train_loader, criterion, optimizer, device)
                 val_loss, val_acc = evaluate_model(model, val_loader, criterion, device)
 
+                # metrics에 추가 => csv에 넣고 best.pt 판가름할때도 사용함
                 metrics = {"epoch": epoch, "train_loss": train_loss, "train_acc": train_acc,
                            "val_loss": val_loss, "val_acc": val_acc}
+                # csv파일에 저장
                 writer.writerow(metrics)
                 stream.flush()
                 print(f"[{condition}] {epoch}/{EPOCHS} "
                       f"train loss={train_loss:.4f}, acc={train_acc:.4f} "
                       f"val loss={val_loss:.4f}, acc={val_acc:.4f}", flush=True)
 
+                # 최적 가중치 저장로직 => 검증정확도가 더 높은모델을 저장한다, 같을경우 손실이 더 낮은모델을 저장한다
                 if best is None or (val_acc, -val_loss) > (best["val_acc"], -best["val_loss"]):
-                    best = metrics
+                    best = metrics # 기존 metrics를 best로 저장(다음 epoch비교)
                     checkpoint = CHECKPOINT_INFO.copy()
-                    checkpoint.update(metrics)
-                    checkpoint["model_state"] = model.state_dict()
-                    checkpoint["augmentation"] = condition
-                    torch.save(checkpoint, directory / "best.pt")
+                    checkpoint.update(metrics) # 지정한 dict변수에 key가 없다면 추가, key가 있다면 value업데이트
+                    checkpoint["model_state"] = model.state_dict() # 현재 모델의 가중치, 편향, BatchNorm 누적 통계
+                    checkpoint["augmentation"] = condition # 증강 on/off 여부 기록
+                    torch.save(checkpoint, directory / "best.pt") # 가중치 저장
 
         results.append({"augmentation": condition, "best_epoch": best["epoch"],
                         "val_loss": best["val_loss"], "val_acc": best["val_acc"]})
