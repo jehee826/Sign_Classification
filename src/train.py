@@ -39,8 +39,9 @@ def train_epoch(model, train_loader, criterion, optimizer, device):
         # 만약 제거하지않는다면? 
         # 한번 계산 == 기울기 2.0 => 가중치반영 => 가중치 2.0 => 다음 epoch에 기울기 계산 => 여기서 기존기울기와 합쳐져버려 가중치에 한번에 들어가버림 => 기존기울기 2.0 + 그다음 기울기 1.0 == 3.0이 가중치에 합해져버린다 => 그 전 epoch에서 업데이트된 가중치에 1.0이 더해지는게 아니라 3.0이 더해져버려서 2.0(기존) + 3.0(초기화 안된가중치) == 5.0이 되버림 
         optimizer.zero_grad()
-        # 순전파 => pytorch가 제공하는 nn.module로 
+        # 순전파 => pytorch의 nn.module이 제공하는 __call__매직메서드로인해 forward()가 실행됨
         logits = model(images)
+        # 손실 계산
         loss = criterion(logits, labels)
         loss.backward()
         optimizer.step()
