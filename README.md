@@ -23,18 +23,17 @@
 
 ## 구현 파일
 
-- `src/data_processing.py`: 원본 폴더와 같은 구조로 비율을 유지해 긴 변이 128px인 사진을 저장하는 명령.
-- `src/model.py`: 직접 구성한 합성곱 3블록과 14클래스 분류부.
-- `src/train.py`: 무작위 초기화 학습, 증강 off/on 비교, epoch별 평가, 가중치 선택과 혼동행렬.
+- `src/model.py`: 합성곱 5층과 자음 14개 분류층.
+- `src/train.py`: 원본 전처리와 분할, 무작위 초기화 학습, 증강 off/on 비교, 가중치 선택과 혼동행렬.
 - `src/predict.py`: 원본 이미지 폴더를 읽어 `filename,pred` CSV 생성.
 
 `requirements.txt`는 저장소 루트에 둔다. 원본 사진은 기본 `data/`, 학습 입력은 기본 `data_prosessing/`, 결과는 `result/`, 추론 가중치는 `best.pt`에 둔다. 상대 경로 인자는 명령을 실행한 현재 폴더를 기준으로 해석한다.
 
-사진은 저장된 픽셀 방향과 가로세로 비율을 유지하면서 긴 변을 128px로 맞춘다. 학습과 예측에서는 검은 여백을 채워 128×128 RGB 입력을 만들고, Torchvision v2의 `ToImage()`와 `ToDtype(torch.float32, scale=True)`로 0~1 범위의 CHW 텐서로 바꾼다. 증강을 켠 학습에는 회전 -10~10도와 밝기 0.90~1.10을 적용한다.
+사진은 저장된 방향과 비율을 유지하며 긴 변을 300px로 맞춘 뒤 대비를 보정한다. 학습과 예측에서는 검은 여백을 넣어 300×300 RGB 입력을 만들고 0~1 범위의 CHW 텐서로 바꾼다. 증강을 켠 학습에는 회전 -10~10도와 밝기 0.90~1.10을 적용한다.
 
 ## 실행 환경
 
-Windows의 `nail` 환경에서 PyTorch 2.13.0+cpu와 Torchvision 0.28.0+cpu를 사용했다. 의존성 버전은 `requirements.txt`에 기록했다.
+Windows의 `sign_classification` 환경에서 Python 3.12.16, PyTorch 2.13.0+cu130, Torchvision 0.28.0+cu130을 사용한다. `requirements.txt`는 CUDA 13.0 빌드를 설치하며, RTX 5070 Ti에서 GPU 연산을 확인했다.
 
 아래는 Windows에서 프로젝트 폴더를 연 뒤 사용하는 명령이다. 새 환경에서는 먼저 의존성을 설치한다.
 
@@ -46,13 +45,7 @@ python -m pip install -r requirements.txt
 
 과제 공지대로 `data/c00/`부터 `data/c13/`까지 클래스 폴더 바로 아래에 JPG 원본을 둔다. `c00`은 ㄱ, `c01`은 ㄴ, …, `c13`은 ㅎ이다. 학습·검증을 나누려면 자음당 최소 2장이 필요하다.
 
-학습 명령을 실행하면 `data_prosessing/`이 없을 때 `data/`의 원본을 자동으로 전처리한다. 사진을 리사이즈해 `train/c00/`~`train/c13/`과 `val/c00/`~`val/c13/`으로 나누고, `split.csv`를 함께 저장한다. 이미 `data_prosessing/`이 있으면 학습에 재사용한다. 원본을 바꾼 뒤 다시 전처리하려면 기존 결과 폴더를 별도로 옮겨 둔다.
-
-전처리를 따로 실행하려면 아래 명령을 사용한다. 다른 원본 폴더는 `--input 폴더명`으로 지정하며, 원본 옆에 `폴더명_prosessing/`을 만든다.
-
-```cmd
-python src/data_processing.py
-```
+학습을 시작할 때마다 `data/`의 원본을 현재 입력 크기에 맞게 전처리한다. 사진을 `train/c00/`~`train/c13/`과 `val/c00/`~`val/c13/`으로 나누고, `split.csv`를 함께 저장한다. 새 사진이 모두 준비되면 기존 `data_prosessing/`을 교체한다. 같은 폴더를 읽는 학습이 진행 중이면 그 실행이 끝난 뒤 다시 시작한다.
 
 사진만 넣으면 전처리에서 시드 42로 자음별 약 80:20 분할을 만든다. 이때 결과 CSV의 `group_id`는 비어 있다. 유사한 사진이 양쪽에 들어갈 수 있으므로 팀 비교에는 촬영 그룹을 확인해 만든 `data/split.csv`를 사용한다.
 
@@ -71,7 +64,7 @@ python src/train.py --augmentation on
 python src/train.py --augmentation both
 ```
 
-저장소 루트에서 원하는 명령 하나를 실행한다. 학습 입력 경로는 `src/train.py` 상단의 `DATA_DIR`에서 정한다. `--augmentation`을 생략하면 `both`로 비교한다. 기본 설정은 Adam 0.001, 배치 32, 시드 42, 조건별 30 epoch다. 메모리 부족이면 `BATCH_SIZE`를 16 또는 8로 바꾸고 처음부터 실행한다.
+저장소 루트에서 원하는 명령 하나를 실행한다. 학습 입력 경로는 `src/train.py` 상단의 `DATA_DIR`에서 정한다. `--augmentation`을 생략하면 `both`로 비교한다. 배치 32, 시드 42로 조건별 200에포크를 학습한다. Adam 학습률은 0.001로 시작한다. 검증 손실이 10회 연속 개선되지 않으면 `ReduceLROnPlateau`가 다음 회차 학습률을 0.3배로 낮춘다. 최저 학습률은 0.00001이다. 메모리 부족이면 `BATCH_SIZE`를 16 또는 8로 바꾸고 처음부터 실행한다.
 
 새 결과는 `result/실행ID/`에 저장한다. 실행한 조건의 폴더에 학습 로그와 최고 가중치를, `selected/`에는 선택한 `best.pt`, `train_log.csv`, `confusion_matrix.png`를 둔다. 두 조건을 실행하면 `comparison.csv`도 저장한다. 최다 혼동 자음 쌍은 콘솔에 표시한다.
 
@@ -90,19 +83,19 @@ c00/img_0001.jpg,0,s01,wall,bright,front,medium
 
 ## 학습된 가중치로 예측
 
-새 전처리로 학습한 실행의 `selected/best.pt`를 저장소 루트의 `best.pt`로 복사한 뒤 실행한다. 예측은 시험 원본 사진을 읽어 같은 비율 유지 리사이즈와 여백 추가를 적용한다.
+학습 결과의 `selected/best.pt`를 저장소 루트로 복사한 뒤 실행한다. 예측은 원본 사진에 학습과 같은 리사이즈, 대비 보정, 여백 추가를 적용한다.
 
 ```cmd
 python src/predict.py --input test_images/ --output predict_팀번호.csv
 ```
 
-입력 폴더 바로 아래의 JPG/JPEG/PNG를 파일명 순으로 처리한다. 하위 폴더의 이미지, 빈 입력, 읽기 실패, 가중치 불일치는 중단 사유다. 모든 예측이 성공한 뒤 완성된 CSV를 최종 경로에 저장하며 기존 출력은 덮어쓰지 않는다.
+입력 폴더 바로 아래의 JPG를 파일명 순으로 처리한다. 모든 예측이 성공한 뒤 완성된 CSV를 최종 경로에 저장하며 기존 출력은 덮어쓰지 않는다.
 
 라벨 0~13은 `ㄱ, ㄴ, ㄷ, ㄹ, ㅁ, ㅂ, ㅅ, ㅇ, ㅈ, ㅊ, ㅋ, ㅌ, ㅍ, ㅎ` 순서다.
 
 ## 과제 명령과 제출 폴더
 
-학습과 예측을 실행할 때는 아래 폴더 구조를 사용한다. `data_processing.py`를 포함한 네 구현 파일은 같은 `src/`에 두고, 의존성 목록과 가중치는 한 단계 위에 둔다. 데이터 ZIP·로그·혼동행렬과 2분 이내 영상도 함께 준비한다.
+학습과 예측을 실행할 때는 아래 폴더 구조를 사용한다. 구현 파일 세 개를 같은 `src/`에 두고, 의존성 목록과 가중치는 한 단계 위에 둔다. 데이터 ZIP·로그·혼동행렬과 2분 이내 영상도 함께 준비한다.
 
 ```text
 제출폴더/
@@ -111,10 +104,9 @@ python src/predict.py --input test_images/ --output predict_팀번호.csv
   train_log.csv
   confusion_matrix.png
   data/                 c00~c13·metadata.csv, 팀 공통 split.csv가 있으면 함께 보관
-  data_prosessing/      처음 학습할 때 생성하는 train/, val/, split.csv
+  data_prosessing/      학습을 시작할 때 생성하는 train/, val/, split.csv
   test_images/          시험 입력 폴더 예시
   src/
-    data_processing.py
     model.py
     train.py
     predict.py
@@ -128,8 +120,8 @@ python train.py
 python predict.py --input ../test_images/ --output ../predict_팀번호.csv
 ```
 
-이 경우에도 처음 학습할 때 필요하면 `../data_prosessing/`을 만들고, 학습 결과는 `../result/`에 저장한다. 추론은 `../best.pt`를 읽는다. 시험 이미지의 실제 위치에 맞춰 상대 경로를 지정한다.
+이 경우에도 학습 전에 `../data_prosessing/`을 새로 만들고, 학습 결과는 `../result/`에 저장한다. 추론은 `../best.pt`를 읽는다. 시험 이미지의 실제 위치에 맞춰 상대 경로를 지정한다.
 
 ## 현재 확인 범위
 
-현재 작업용 데이터는 자음 14종의 JPG 420장이다. 조건별 30 epoch의 팀 전체 데이터 학습과 시험 입력 처리 시간 측정은 남아 있다.
+현재 작업용 데이터는 자음 14종의 JPG 420장이다. 이 데이터의 검증 사진 84장 중 59장을 맞혀 70.24%를 기록했다. 팀 전체 데이터 학습과 시험 입력 처리 시간 측정은 남아 있다.

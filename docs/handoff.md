@@ -1,6 +1,6 @@
 # 수화 이미지 분류 프로젝트 인계
 
-갱신일 2026-11-20
+갱신일 2026-11-21
 
 ## 현재 상태
 
@@ -15,14 +15,14 @@
 
 ## 실행 방법
 
-1. 소스 네 파일을 `src/`에 두고 루트의 `requirements.txt`로 실행 환경을 준비한다. 확인한 환경은 Windows `nail`, Python 3.12.16, PyTorch 2.13.0+cpu, Torchvision 0.28.0+cpu다.
+1. `train.py`, `model.py`, `predict.py`를 `src/`에 두고 루트의 `requirements.txt`로 실행 환경을 준비한다. 확인한 환경은 Windows `nail`, Python 3.12.16, PyTorch 2.13.0+cpu, Torchvision 0.28.0+cpu다.
 2. 원본과 실제 촬영 정보는 필요한 컴퓨터의 `data/`로 별도 전달한다. 원본과 생성된 결과 폴더는 Git에서 제외된다.
-3. 루트에서 `python src/train.py`를 실행한다. `src/`에서는 `python train.py`를 실행한다. 첫 실행은 필요하면 `data_prosessing/`을 만들고, 기본값으로 증강 켬·끔을 각 30 epoch 학습한다.
+3. 루트에서 `python src/train.py`를 실행한다. `src/`에서는 `python train.py`를 실행한다. 실행마다 300px 리사이즈와 대비 보정으로 `data_prosessing/`을 새로 만들고, 증강 켬·끔을 각 200에포크 학습한다.
 4. 예측에는 선택한 `selected/best.pt`를 루트의 `best.pt`로 복사한다. 루트에서 `python src/predict.py --input test_images/ --output predict_팀번호.csv`를 실행한다. 명령의 입력과 출력 상대 경로는 실행 위치를 기준으로 읽는다.
 
 ## 이어서 할 일
 
 1. 모든 팀원의 원본을 모아 클래스별 30장 이상인지와 촬영 조건·품질을 확인한다. `metadata.csv`에 촬영자, 배경, 조명, 각도, 크기를 입력한다.
-2. 유사 촬영 사진이 학습·검증에 나뉘지 않도록 팀 공통 `data/split.csv`를 확정한다. 원본이나 분할을 바꿨다면 이전 `data_prosessing/`을 옮기고 학습을 시작해 새 입력을 생성한다.
-3. 팀 데이터로 두 조건을 본학습하고 `selected/`의 가중치·학습 로그·혼동행렬을 확인한다. 현재 남아 있는 결과는 데이터 준비물이며, 1 epoch 검증 결과는 임시 폴더에서 확인했다.
+2. 유사 촬영 사진이 학습·검증에 나뉘지 않도록 팀 공통 `data/split.csv`를 확정한다. 확정한 분할은 다음에 학습을 시작할 때 전처리에 반영된다.
+3. 팀 데이터로 두 조건을 학습하고 `selected/`의 가중치·학습 로그·혼동행렬을 확인한다. 작업용 사진의 검증 정확도는 최고 70.24%였다.
 4. 원본과 완성한 메타데이터의 `data.zip`, 코드와 의존성, 학습 결과, 2분 이내 실행 영상을 준비한다. 시험 당일 예측 CSV 제출 제한은 30분이다.

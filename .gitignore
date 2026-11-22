@@ -1,6 +1,7 @@
 /data/**/*
 !/data/**/
 !/data/.gitkeep
+/T06_data/
 /data_prosessing/
 
 /docs/design/
